@@ -657,7 +657,14 @@ tbody td{padding:11px 16px;font-size:13px;color:var(--text);vertical-align:middl
             <option value="Parcelado">Parcelado</option>
           </select>
         </div>
-        <div class="form-group"><label>Link Asaas (opcional)</label><input id="f-asaas" type="text" placeholder="https://asaas.com/i/..."></div>
+        <div class="form-group">
+          <label>Link Asaas</label>
+          <div class="input-with-btn">
+            <input id="f-asaas" type="text" placeholder="Gerado automaticamente ou cole aqui...">
+            <button class="btn btn-ghost btn-sm" onclick="gerarCobrancaAsaas()" id="btn-gerar-asaas" title="Gerar cobrança Boleto+PIX no Asaas">💳 Gerar</button>
+          </div>
+          <div class="cnpj-info" id="asaas-info" style="display:none"></div>
+        </div>
       </div>
 
       <div class="form-group"><label>Observações</label><textarea id="f-obs" rows="2" placeholder="Detalhes adicionais..."></textarea></div>
@@ -710,6 +717,8 @@ tbody td{padding:11px 16px;font-size:13px;color:var(--text);vertical-align:middl
 const SUPA_URL='https://leajdjbmuwyyvafetnsi.supabase.co';
 const SUPA_KEY='sb_publishable_e7HsRUw64j7XiZkyLagQgA_2xoxZrrF';
 const db=supabase.createClient(SUPA_URL,SUPA_KEY,{db:{schema:'crm'}});
+const EDGE_FN_URL=SUPA_URL+'/functions/v1/registrar-venda';
+const API_SECRET='Luc4s&Ana*';
 
 // ═══ LAUDOS CONFIG com vencimento automático ═══
 const LAUDOS_PRINCIPAIS=[
@@ -820,6 +829,7 @@ let allVendas=[];
 let selectedCor='#1A7A4A';
 let vendaFormDirty=false;
 let modoRenovacao=false;
+let editandoVendaId=null; // se != null, estamos editando uma venda existente
 let periodoGestor='todos';
 let periodoVendas='todos';
 let customGestor={de:null,ate:null};
@@ -874,11 +884,29 @@ async function init(){
       {id:'polly',nome:'Polly',role:'Vendedora',cor:'#7B1FA2',isGestor:false},
     ];
   }
-  setTimeout(()=>{
+  // Verifica sessão salva no localStorage (login persistente)
+  let savedUser=null;
+  try{ savedUser=localStorage.getItem('lfsst_user'); }catch(e){}
+  if(savedUser && USERS.find(u=>u.id===savedUser)){
+    loginUser=USERS.find(u=>u.id===savedUser);
+    currentUser=loginUser;
+    loginUser=null;
     $('loading-screen').classList.add('fade-out');
-    setTimeout(()=>{$('loading-screen').style.display='none';$('login-screen').classList.add('show');},400);
-  },700);
-  buildLogin();
+    setTimeout(()=>{
+      $('loading-screen').style.display='none';
+      $('app').classList.add('show');
+      const av=$('hdr-av');av.textContent=initials(currentUser.nome);av.style.background=currentUser.cor;
+      $('hdr-name').textContent=currentUser.nome;
+      buildNav();
+      showFirstPage();
+    },400);
+  } else {
+    setTimeout(()=>{
+      $('loading-screen').classList.add('fade-out');
+      setTimeout(()=>{$('loading-screen').style.display='none';$('login-screen').classList.add('show');},400);
+    },700);
+    buildLogin();
+  }
 }
 
 async function loadVendas(){
@@ -987,6 +1015,8 @@ async function confirmarSenha(){
 async function finalizarLogin(){
   currentUser=loginUser;
   loginUser=null;
+  // Persiste sessão no localStorage
+  try{localStorage.setItem('lfsst_user',currentUser.id);}catch(e){}
   $('login-screen').classList.remove('show');
   $('app').classList.add('show');
   const av=$('hdr-av');av.textContent=initials(currentUser.nome);av.style.background=currentUser.cor;
@@ -1003,6 +1033,7 @@ async function login(uid){
 
 function logout(){
   currentUser=null;loginUser=null;
+  try{localStorage.removeItem('lfsst_user');}catch(e){}
   $('app').classList.remove('show');
   $('login-step2').style.display='none';
   $('login-step1').style.display='block';
@@ -1064,7 +1095,7 @@ function renderVendas(){
       <td>${fmtDate(v.vencimento)}</td>
       <td><span class="badge ${sv.cls}">${sv.label}</span></td>
       <td><span class="badge ${pgtoClass(v.pgto)}">${v.pgto||'Pendente'}</span></td>
-      <td><button class="btn-profile" onclick="showPerfil('${encodeURIComponent(v.empresa)}')">👁</button><button class="btn-del" onclick="deletarVenda(${v.id})">🗑</button></td>
+      <td><button class="btn-profile" onclick="editarVenda(${v.id})" title="Editar">✏️</button><button class="btn-profile" onclick="showPerfil('${encodeURIComponent(v.empresa)}')">👁</button><button class="btn-del" onclick="deletarVenda(${v.id})">🗑</button></td>
     </tr>`;
   }).join('');
 }
@@ -1474,7 +1505,7 @@ function renderGestor(){
       <td>${fmtDate(v.vencimento)}</td>
       <td><span class="badge ${sv.cls}">${sv.label}</span></td>
       <td><span class="badge ${pgtoClass(v.pgto)}">${v.pgto||'Pendente'}</span></td>
-      <td><button class="btn-profile" onclick="showPerfil('${encodeURIComponent(v.empresa)}')">👁</button><button class="btn-del" onclick="deletarVenda(${v.id})">🗑</button></td>
+      <td><button class="btn-profile" onclick="editarVenda(${v.id})" title="Editar">✏️</button><button class="btn-profile" onclick="showPerfil('${encodeURIComponent(v.empresa)}')">👁</button><button class="btn-del" onclick="deletarVenda(${v.id})">🗑</button></td>
     </tr>`;
   }).join('');
 }
@@ -1502,10 +1533,21 @@ function popularSelectLaudosFiltro(){
     opts.map(id=>`<option value="${id}">${id}</option>`).join('');
 }
 
+// ═══ EDITAR VENDA ═══
+function editarVenda(id){
+  const v=allVendas.find(x=>x.id===id);
+  if(!v){toast('❌ Venda não encontrada.',true);return;}
+  editandoVendaId=id;
+  openVendaModal(null, v);
+}
+
 // ═══ MODAL VENDA ═══
-function openVendaModal(vendaOrigem=null){
+function openVendaModal(vendaOrigem=null, vendaEditar=null){
   modoRenovacao=!!vendaOrigem;
-  $('modal-venda-title').textContent=modoRenovacao?'🔄 Registrar Renovação':'📋 Registrar Nova Venda';
+  const modoEdicao=!!vendaEditar;
+  editandoVendaId=modoEdicao?vendaEditar.id:null;
+  $('modal-venda-title').textContent=modoEdicao?'✏️ Editar Venda':modoRenovacao?'🔄 Registrar Renovação':'📋 Registrar Nova Venda';
+  $('btn-salvar').textContent=modoEdicao?'✓ Salvar Alterações':'✓ Salvar Venda';
   $('renovacao-banner').style.display=modoRenovacao?'flex':'none';
   $('f-data').value=new Date().toISOString().split('T')[0];
   $('vendedor-row').style.display=currentUser.isGestor?'flex':'none';
@@ -1541,6 +1583,7 @@ function openVendaModal(vendaOrigem=null){
   ['f-empresa','f-cnpj','f-contato','f-telefone','f-valor','f-repasse','f-lucro','f-venc','f-asaas','f-obs','f-atividade'].forEach(id=>{if($(id))$(id).value='';});
   $('f-func').value='';$('f-pgto').value='Pendente';
   $('cnpj-info').classList.remove('show');$('aso-notice').classList.remove('show');$('venc-auto-info').style.display='none';
+  if($('asaas-info')){$('asaas-info').classList.remove('show');$('asaas-info').style.display='none';}
   $('sel-summary').textContent='';
   $('gr-box').style.display='none';
   $('oport-modal').style.display='none';
@@ -1579,6 +1622,46 @@ function openVendaModal(vendaOrigem=null){
       });
       updateVencAuto();updateSelSummary();
       if(vendaOrigem.cnae_cod)mostrarGrauRisco(vendaOrigem.cnae_cod,vendaOrigem.cnae_desc||'');
+    },50);
+  }
+
+  // Se for edição, pré-preenche com dados da venda existente
+  if(vendaEditar){
+    const ve=vendaEditar;
+    const cnpjEd=(ve.cnpj||'').replace(/\D/g,'');
+    if(cnpjEd && cnpjEd.length<=12 && !/0001/.test(cnpjEd)){setDocTipo('CEI');}
+    $('f-empresa').value=ve.empresa||'';
+    $('f-cnpj').value=ve.cnpj||'';
+    $('f-contato').value=ve.contato||'';
+    $('f-telefone').value=ve.telefone||'';
+    $('f-valor').value=ve.valor||'';
+    $('f-repasse').value=ve.repasse||'';
+    $('f-asaas').value=ve.link_asaas||'';
+    $('f-obs').value=ve.obs||'';
+    $('f-data').value=ve.data_venda||'';
+    $('f-venc').value=ve.vencimento||'';
+    $('f-pgto').value=ve.pgto||'Pendente';
+    if($('f-funcoes'))$('f-funcoes').value=ve.funcoes||'';
+    if($('f-atividade')){$('f-atividade').value=ve.cnae_desc||'';$('f-atividade').dataset.cnae=ve.cnae_cod||'';}
+    if(currentUser.isGestor)$('f-vendedor').value=ve.vendedor_id||'';
+    calcLucro();
+    setTimeout(()=>{
+      document.querySelectorAll('#laudos-grid-main .laudo-check, #laudos-grid-nrs .laudo-check').forEach(el=>{
+        if((ve.laudos||[]).includes(el.dataset.id)) el.classList.add('checked');
+      });
+      document.querySelectorAll('#laudos-grid-medicoes .laudo-check').forEach(el=>{
+        if((ve.laudos||[]).includes(el.dataset.id)) el.classList.add('checked');
+      });
+      // Psicossocial
+      const psico=(ve.laudos||[]).find(l=>l.startsWith('Psicossocial'));
+      if(psico && $('psico-toggle')){
+        $('psico-toggle').classList.add('checked');
+        $('psico-config').style.display='block';
+        const match=psico.match(/\((\d+)/);
+        if(match) $('f-psico-colabs').value=match[1];
+      }
+      updateVencAuto();updateSelSummary();
+      if(ve.cnae_cod)mostrarGrauRisco(ve.cnae_cod,ve.cnae_desc||'');
     },50);
   }
 
@@ -1870,6 +1953,78 @@ function atualizarOportunidadesModal(){
   else box.style.display='none';
 }
 
+// ═══ GERAR COBRANÇA ASAAS DIRETO DO CRM ═══
+async function gerarCobrancaAsaas(){
+  const empresa=$('f-empresa').value.trim();
+  const valor=parseFloat($('f-valor').value);
+  if(!empresa){toast('⚠️ Preencha o nome da empresa primeiro.',true);return;}
+  if(!valor||valor<5){toast('⚠️ Valor mínimo para cobrança Asaas é R$ 5,00.',true);return;}
+
+  const btn=$('btn-gerar-asaas');
+  btn.disabled=true;btn.textContent='⏳ Gerando...';
+  const info=$('asaas-info');
+
+  try{
+    const laudos=[
+      ...[...document.querySelectorAll('#laudos-grid-main .laudo-check.checked, #laudos-grid-nrs .laudo-check.checked')].map(e=>e.dataset.id),
+      ...[...document.querySelectorAll('#laudos-grid-medicoes .laudo-check.checked')].map(e=>e.dataset.id),
+    ];
+    if($('psico-toggle')?.classList.contains('checked')){
+      const colabs=parseInt($('f-psico-colabs').value)||0;
+      if(colabs>0)laudos.push(`Psicossocial (${colabs} colab)`);
+    }
+
+    const res=await fetch(EDGE_FN_URL,{
+      method:'POST',
+      headers:{'Content-Type':'application/json','x-api-key':API_SECRET},
+      body:JSON.stringify({
+        empresa,
+        cnpj:$('f-cnpj').value||null,
+        telefone:$('f-telefone').value||null,
+        contato:$('f-contato').value||null,
+        vendedor_id:currentUser.id,
+        laudos:laudos.length?laudos:['Serviço'],
+        valor,
+        vencimento:$('f-venc').value||null,
+        gerar_cobranca:true,
+        // NÃO salva a venda — só gera a cobrança. A venda será salva pelo salvarVenda().
+        // Porém a Edge Function sempre salva... vamos usar o link e deletar a venda duplicada.
+      })
+    });
+    const data=await res.json();
+    if(!res.ok) throw new Error(data.error||'Erro na API');
+
+    if(data.asaas?.link_pagamento){
+      $('f-asaas').value=data.asaas.link_pagamento;
+      info.innerHTML=`✅ Cobrança gerada! <a href="${data.asaas.link_pagamento}" target="_blank" style="color:var(--green);font-weight:700">Abrir link</a>`;
+      if(data.asaas.pix_copia_cola){
+        info.innerHTML+=`<br>📱 PIX copia e cola: <code style="font-size:10px;word-break:break-all;cursor:pointer" onclick="navigator.clipboard.writeText(this.textContent);toast('📋 PIX copiado!')">${data.asaas.pix_copia_cola}</code>`;
+      }
+      info.style.display='block';info.style.background='';info.style.color='';
+      info.classList.add('show');
+      toast('✅ Cobrança Asaas gerada!');
+
+      // Remove a venda duplicada criada pela Edge Function (a real será salva pelo salvarVenda)
+      if(data.venda?.id){
+        await db.from('vendas').delete().eq('id',data.venda.id);
+        allVendas=allVendas.filter(v=>v.id!==data.venda.id);
+      }
+    } else if(data.asaas?.erro){
+      info.innerHTML=`❌ ${data.asaas.erro}`;
+      info.style.display='block';info.style.background='var(--red-light)';info.style.color='var(--red)';
+      info.classList.add('show');
+      toast('❌ Erro ao gerar cobrança.',true);
+    }
+  }catch(e){
+    console.error('Asaas error:',e);
+    info.innerHTML=`❌ ${e.message}`;
+    info.style.display='block';info.style.background='var(--red-light)';info.style.color='var(--red)';
+    info.classList.add('show');
+    toast('❌ Erro ao gerar cobrança.',true);
+  }
+  btn.disabled=false;btn.textContent='💳 Gerar';
+}
+
 async function salvarVenda(){
   const empresa=$('f-empresa').value.trim();
   const valor=parseFloat($('f-valor').value);
@@ -1887,7 +2042,7 @@ async function salvarVenda(){
   const btn=$('btn-salvar');btn.disabled=true;btn.textContent='Salvando...';
   const vId=currentUser.isGestor?($('f-vendedor').value||currentUser.id):currentUser.id;
   const rep=parseFloat($('f-repasse').value)||0;
-  const{data,error}=await db.from('vendas').insert([{
+  const vendaObj={
     empresa,cnpj:$('f-cnpj').value||null,contato:$('f-contato').value||null,
     telefone:$('f-telefone').value||null,vendedor_id:vId,laudos,valor,repasse:rep,
     data_venda:$('f-data').value||null,vencimento:$('f-venc').value||null,
@@ -1896,13 +2051,34 @@ async function salvarVenda(){
     cnae_cod:$('f-atividade')?.dataset?.cnae||null,
     cnae_desc:$('f-atividade')?.value||null,
     is_renovacao:modoRenovacao,
-  }]).select();
-  btn.disabled=false;btn.textContent='✓ Salvar Venda';
+  };
+
+  let data,error;
+  if(editandoVendaId){
+    // MODO EDIÇÃO: atualiza venda existente
+    const res=await db.from('vendas').update(vendaObj).eq('id',editandoVendaId).select();
+    data=res.data;error=res.error;
+  } else {
+    // MODO NOVO: insere nova venda
+    const res=await db.from('vendas').insert([vendaObj]).select();
+    data=res.data;error=res.error;
+  }
+
+  btn.disabled=false;btn.textContent=editandoVendaId?'✓ Salvar Alterações':'✓ Salvar Venda';
   if(error){console.error(error);toast('❌ Erro ao salvar. Verifique o console.',true);return;}
-  allVendas.unshift(data[0]);
+
+  if(editandoVendaId){
+    // Atualiza a venda no array local
+    const idx=allVendas.findIndex(v=>v.id===editandoVendaId);
+    if(idx!==-1) allVendas[idx]=data[0];
+    editandoVendaId=null;
+    toast('✅ Venda atualizada com sucesso!');
+  } else {
+    allVendas.unshift(data[0]);
+    toast('✅ Venda registrada com sucesso!');
+  }
   vendaFormDirty=false;
   closeModal('modal-venda');
-  toast('✅ Venda registrada com sucesso!');
   render(document.querySelector('.page.active').id);
 }
 
