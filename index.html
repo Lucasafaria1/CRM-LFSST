@@ -323,7 +323,7 @@ tbody td{padding:11px 16px;font-size:13px;color:var(--text);vertical-align:middl
 
 <div id="app">
   <header class="app-header">
-    <div class="hdr-brand">LF <span>SST</span></div>
+    <div class="hdr-brand" onclick="showFirstPage()" style="cursor:pointer" title="Ir para tela inicial">LF <span>SST</span></div>
     <div class="hdr-right">
       <div class="av-sm" id="hdr-av"></div>
       <span id="hdr-name"></span>
@@ -830,6 +830,7 @@ let selectedCor='#1A7A4A';
 let vendaFormDirty=false;
 let modoRenovacao=false;
 let editandoVendaId=null; // se != null, estamos editando uma venda existente
+let asaasPaymentIdGerado=null; // payment_id gerado pelo botão "Gerar" no modal
 let periodoGestor='todos';
 let periodoVendas='todos';
 let customGestor={de:null,ate:null};
@@ -1584,6 +1585,7 @@ function openVendaModal(vendaOrigem=null, vendaEditar=null){
   $('f-func').value='';$('f-pgto').value='Pendente';
   $('cnpj-info').classList.remove('show');$('aso-notice').classList.remove('show');$('venc-auto-info').style.display='none';
   if($('asaas-info')){$('asaas-info').classList.remove('show');$('asaas-info').style.display='none';}
+  asaasPaymentIdGerado=null;
   $('sel-summary').textContent='';
   $('gr-box').style.display='none';
   $('oport-modal').style.display='none';
@@ -1996,6 +1998,7 @@ async function gerarCobrancaAsaas(){
 
     if(data.asaas?.link_pagamento){
       $('f-asaas').value=data.asaas.link_pagamento;
+      asaasPaymentIdGerado=data.asaas.payment_id||null;
       info.innerHTML=`✅ Cobrança gerada! <a href="${data.asaas.link_pagamento}" target="_blank" style="color:var(--green);font-weight:700">Abrir link</a>`;
       if(data.asaas.pix_copia_cola){
         info.innerHTML+=`<br>📱 PIX copia e cola: <code style="font-size:10px;word-break:break-all;cursor:pointer" onclick="navigator.clipboard.writeText(this.textContent);toast('📋 PIX copiado!')">${data.asaas.pix_copia_cola}</code>`;
@@ -2051,6 +2054,7 @@ async function salvarVenda(){
     cnae_cod:$('f-atividade')?.dataset?.cnae||null,
     cnae_desc:$('f-atividade')?.value||null,
     is_renovacao:modoRenovacao,
+    asaas_payment_id:asaasPaymentIdGerado||null,
   };
 
   let data,error;
